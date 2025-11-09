@@ -12,6 +12,7 @@ from pathlib import Path
 import io
 from collections import Counter
 import re
+import os
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -645,12 +646,7 @@ async def estadisticas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     # Token del bot (lo debes obtener de @BotFather)
-    TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-    
-    if not TOKEN:
-        print("❌ Error: No se encontró TELEGRAM_BOT_TOKEN en las variables de entorno")
-        print("Configura tu token con: export TELEGRAM_BOT_TOKEN='tu_token_aqui'")
-        return
+    TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
     
     # Crear aplicación
     application = Application.builder().token(TOKEN).build()
