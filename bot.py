@@ -731,7 +731,7 @@ def main():
     
     application = Application.builder().token(TOKEN).build()
     
-    application.create_task(configurar_comandos(application))
+    application.post_init = configurar_comandos
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("ayuda", ayuda))
