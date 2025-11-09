@@ -1,7 +1,7 @@
 import os
 import logging
 from datetime import datetime, timedelta
-from telegram import Update
+from telegram import Update, BotCommand 
 from telegram.ext import Application, CommandHandler, ContextTypes
 import matplotlib
 matplotlib.use('Agg')
@@ -12,7 +12,7 @@ from pathlib import Path
 import io
 from collections import Counter
 import re
-import os
+import asyncio
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -20,7 +20,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# NOTA: Los objetivos son ahora solo una referencia visual, no un límite estricto.
 PRESUPUESTO = {
     "vivienda": {"objetivo": 800, "nombre": "Alquiler y gastos de casa"},
     "ocio": {"objetivo": 350, "nombre": "Suscripciones, fiestas, etc."},
@@ -48,7 +47,6 @@ class GestorGastos:
             json.dump(self.gastos, f, ensure_ascii=False, indent=2)
     
     def agregar_gasto(self, categoria, importe, descripcion=""):
-        # Se elimina cualquier lógica de límite, el gasto siempre se registra.
         mes_actual = datetime.now().strftime("%Y-%m")
         
         if mes_actual not in self.gastos:
@@ -67,8 +65,41 @@ class GestorGastos:
         self._guardar_datos()
         return True
     
+    def eliminar_ultimo_gasto(self):
+        ultimo_gasto = None
+        mes_ultimo = None
+        categoria_ultima = None
+        indice_ultimo = -1
+
+        for mes, categorias in self.gastos.items():
+            for categoria, gastos in categorias.items():
+                for i, gasto in enumerate(gastos):
+                    fecha_actual = gasto["fecha"]
+                    if ultimo_gasto is None or fecha_actual > ultimo_gasto["fecha"]:
+                        ultimo_gasto = gasto
+                        mes_ultimo = mes
+                        categoria_ultima = categoria
+                        indice_ultimo = i
+        
+        if ultimo_gasto:
+            del self.gastos[mes_ultimo][categoria_ultima][indice_ultimo]
+            
+            if not self.gastos[mes_ultimo][categoria_ultima]:
+                 del self.gastos[mes_ultimo][categoria_ultima]
+            if not self.gastos[mes_ultimo]:
+                del self.gastos[mes_ultimo]
+                
+            self._guardar_datos()
+            
+            return {
+                "exito": True,
+                "importe": ultimo_gasto["importe"],
+                "categoria": categoria_ultima
+            }
+            
+        return {"exito": False}
+    
     def obtener_gastos_rango(self, fecha_inicio, fecha_fin):
-        """Obtiene todos los gastos en un rango de fechas"""
         gastos_filtrados = []
         
         for mes, categorias in self.gastos.items():
@@ -97,14 +128,12 @@ class GestorGastos:
             resumen[categoria] = {
                 "total": total,
                 "cantidad": len(gastos),
-                # Corregido: usando 'objetivo' en lugar de 'limite'
                 "objetivo": PRESUPUESTO.get(categoria, {}).get("objetivo", 0) 
             }
         
         return resumen
     
     def buscar_gastos(self, termino):
-        """Busca gastos por descripción"""
         resultados = []
         termino_lower = termino.lower()
         
@@ -121,7 +150,6 @@ class GestorGastos:
         return sorted(resultados, key=lambda x: x["fecha"], reverse=True)
     
     def analizar_descripciones(self, fecha_inicio=None, fecha_fin=None):
-        """Analiza las palabras más frecuentes en las descripciones"""
         if fecha_inicio is None:
             fecha_inicio = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         if fecha_fin is None:
@@ -129,19 +157,36 @@ class GestorGastos:
         
         gastos = self.obtener_gastos_rango(fecha_inicio, fecha_fin)
         
-        # Extraer palabras significativas
         palabras = []
         stop_words = {'de', 'del', 'la', 'el', 'en', 'con', 'por', 'para', 'a', 'y', 'o', 'un', 'una'}
         
         for gasto in gastos:
             desc = gasto.get("descripcion", "").lower()
-            # Extraer palabras de 3+ caracteres
             palabras_desc = re.findall(r'\b\w{3,}\b', desc)
             palabras.extend([p for p in palabras_desc if p not in stop_words])
         
         return Counter(palabras).most_common(10)
 
 gestor = GestorGastos()
+
+async def configurar_comandos(application: Application):
+    commands = [
+        BotCommand("start", "Inicio y comandos disponibles"),
+        BotCommand("gasto", "Registra un nuevo gasto: /gasto <cat> <imp> [desc]"),
+        BotCommand("resumen", "Resumen de gastos del mes actual"),
+        BotCommand("grafica", "Genera gráficas de gastos (mensual, semanal, etc.)"),
+        BotCommand("detalle", "Detalle de gastos de una categoría: /detalle <cat>"),
+        BotCommand("buscar", "Busca gastos por descripción: /buscar <término>"),
+        BotCommand("estadisticas", "Análisis de tus patrones de gasto"),
+        BotCommand("redefinir", "Cambia el objetivo de gasto: /redefinir <cat> <obj>"),
+        BotCommand("deshacer", "Elimina el último gasto registrado"),
+        BotCommand("ayuda", "Información de presupuesto y categorías")
+    ]
+    try:
+        await application.bot.set_my_commands(commands)
+        logger.info("Comandos de Telegram actualizados.")
+    except Exception as e:
+        logger.error(f"Error al configurar comandos de Telegram: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mensaje = """
@@ -151,6 +196,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 *📝 Registrar gastos:*
 `/gasto <categoría> <importe> [descripción]`
+`/deshacer` - Elimina el último gasto
 
 Ejemplo: `/gasto ocio 15.65 Cervezas con amigos`
 
@@ -167,10 +213,6 @@ Ejemplo: `/gasto ocio 15.65 Cervezas con amigos`
 *📊 Consultar:*
 • `/resumen` - Resumen del mes actual
 • `/grafica [filtro]` - Gráficas de gastos
-  · `/grafica` - Mes actual
-  · `/grafica semanal` - Última semana
-  · `/grafica mensual` - Comparativa mensual
-  · `/grafica 2025-01-01 2025-03-31` - Rango personalizado
 • `/detalle <categoría>` - Lista de gastos de una categoría
 • `/buscar <término>` - Buscar gastos por descripción
 • `/estadisticas` - Análisis de tus gastos
@@ -190,7 +232,6 @@ async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
 """
     total_presupuesto = 0
     for cat, info in PRESUPUESTO.items():
-        # Corregido: usando 'objetivo' en lugar de 'limite'
         if cat not in ["ahorro", "restaurante"]:
             total_presupuesto += info['objetivo'] 
         mensaje += f"• *{info['nombre']}*: {info['objetivo']}€\n"
@@ -245,7 +286,6 @@ async def registrar_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         resumen = gestor.obtener_resumen_mes()
         cat_info = resumen.get(categoria, {})
         total = cat_info.get("total", importe)
-        # Corregido: usando 'objetivo' en lugar de 'limite'
         objetivo = PRESUPUESTO[categoria]["objetivo"] 
         porcentaje = (total / objetivo * 100) if objetivo > 0 else 0
         
@@ -274,9 +314,27 @@ async def registrar_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(mensaje, parse_mode='Markdown')
         
     except Exception as e:
-        # El gasto debe registrarse sin errores de "limite"
         logger.error(f"Error al registrar gasto: {e}")
         await update.message.reply_text("❌ Error al registrar el gasto. Inténtalo de nuevo.")
+
+async def deshacer_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        resultado = gestor.eliminar_ultimo_gasto()
+
+        if resultado["exito"]:
+            nombre_categoria = PRESUPUESTO[resultado['categoria']]['nombre']
+            
+            mensaje = f"🗑️ *Gasto deshecho correctamente:*\n"
+            mensaje += f"  - Importe: {resultado['importe']:.2f}€\n"
+            mensaje += f"  - Categoría: {nombre_categoria}"
+            await update.message.reply_text(mensaje, parse_mode='Markdown')
+        else:
+            await update.message.reply_text("❌ No se encontró ningún gasto para deshacer.")
+            
+    except Exception as e:
+        logger.error(f"Error al deshacer gasto: {e}")
+        await update.message.reply_text("❌ Error al intentar deshacer el gasto.")
+
 
 async def resumen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     resumen_mes = gestor.obtener_resumen_mes()
@@ -295,7 +353,6 @@ async def resumen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             info = resumen_mes[categoria]
             nombre = PRESUPUESTO[categoria]["nombre"]
             total = info["total"]
-            # Corregido: usando 'objetivo' en lugar de 'limite'
             objetivo = PRESUPUESTO[categoria]["objetivo"] 
             
             porcentaje = (total / objetivo * 100) if objetivo > 0 else 0
@@ -307,7 +364,6 @@ async def resumen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             mensaje += f"{emoji} *{nombre}*\n"
             mensaje += f"   {total:.2f}€ / {objetivo}€ ({porcentaje:.1f}%) · {info['cantidad']} gastos\n\n"
     
-    # Corregido: usando 'objetivo' en lugar de 'limite'
     presupuesto_total = sum(v["objetivo"] for k, v in PRESUPUESTO.items() 
                            if k not in ["ahorro", "restaurante"])
     
@@ -324,29 +380,24 @@ async def resumen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def grafica(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # Determinar el rango de fechas según el filtro
         ahora = datetime.now()
         
         if len(context.args) == 0 or context.args[0] == "mensual":
-            # Gráfica mensual (mes actual)
             fecha_inicio = ahora.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             fecha_fin = ahora
             titulo = "Gastos del Mes Actual"
             tipo = "mensual"
         elif context.args[0] == "semanal":
-            # Última semana
             fecha_inicio = ahora - timedelta(days=7)
             fecha_fin = ahora
             titulo = "Gastos de la Última Semana"
             tipo = "semanal"
         elif context.args[0] == "diaria":
-            # Últimos 30 días
             fecha_inicio = ahora - timedelta(days=30)
             fecha_fin = ahora
             titulo = "Gastos Diarios (Últimos 30 días)"
             tipo = "diaria"
         elif len(context.args) == 2:
-            # Rango personalizado
             try:
                 fecha_inicio = datetime.fromisoformat(context.args[0])
                 fecha_fin = datetime.fromisoformat(context.args[1])
@@ -374,7 +425,6 @@ async def grafica(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("📭 No hay gastos en el período seleccionado.")
             return
         
-        # Preparar datos por categoría
         gastos_por_categoria = {}
         for gasto in gastos:
             cat = gasto["categoria"]
@@ -382,11 +432,9 @@ async def grafica(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 gastos_por_categoria[cat] = []
             gastos_por_categoria[cat].append(gasto)
         
-        # Crear figura
         fig = plt.figure(figsize=(16, 10))
         gs = fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
         
-        # 1. Gráfico de barras: Total por categoría
         ax1 = fig.add_subplot(gs[0, 0])
         categorias = []
         totales = []
@@ -397,14 +445,12 @@ async def grafica(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if cat in gastos_por_categoria:
                 nombre = PRESUPUESTO[cat]["nombre"]
                 total = sum(g["importe"] for g in gastos_por_categoria[cat])
-                # Corregido: usando 'objetivo' en lugar de 'limite'
                 objetivo = PRESUPUESTO[cat]["objetivo"]
                 
                 categorias.append(nombre[:20])
                 totales.append(total)
                 objetivos.append(objetivo)
                 
-                # Color según % del objetivo
                 porcentaje = (total / objetivo * 100) if objetivo > 0 else 0
                 if porcentaje <= 80:
                     colores.append('#2ecc71')
@@ -427,7 +473,6 @@ async def grafica(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ax1.legend()
         ax1.grid(axis='y', alpha=0.3)
         
-        # 2. Gráfico de tarta: Distribución
         ax2 = fig.add_subplot(gs[0, 1])
         colores_tarta = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c']
         
@@ -435,10 +480,8 @@ async def grafica(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ax2.pie(totales, labels=categorias, autopct='%1.1f%%', colors=colores_tarta, startangle=90)
             ax2.set_title('Distribución de Gastos', fontsize=12, fontweight='bold')
         
-        # 3. Evolución temporal
         ax3 = fig.add_subplot(gs[1, :])
         
-        # Agrupar gastos por día
         gastos_por_dia = {}
         for gasto in gastos:
             fecha = datetime.fromisoformat(gasto["fecha"]).date()
@@ -449,7 +492,6 @@ async def grafica(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fechas = sorted(gastos_por_dia.keys())
         importes_diarios = [gastos_por_dia[f] for f in fechas]
         
-        # Calcular acumulado
         acumulado = []
         suma = 0
         for imp in importes_diarios:
@@ -468,27 +510,23 @@ async def grafica(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ax3.grid(axis='y', alpha=0.3)
         ax3.tick_params(axis='x', rotation=45)
         
-        # Formato de fechas en el eje X
         if len(fechas) > 15:
             ax3.xaxis.set_major_locator(mdates.WeekdayLocator())
             ax3.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m'))
         else:
             ax3.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m'))
         
-        # Leyendas
         lines1, labels1 = ax3.get_legend_handles_labels()
         lines2, labels2 = ax3_2.get_legend_handles_labels()
         ax3.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
         
         plt.suptitle(titulo, fontsize=14, fontweight='bold', y=0.98)
         
-        # Guardar en memoria
         buf = io.BytesIO()
         plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
         buf.seek(0)
         plt.close(fig)
         
-        # Enviar imagen con caption
         total_periodo = sum(g["importe"] for g in gastos)
         caption = f"💰 Total del período: {total_periodo:.2f}€\n📊 {len(gastos)} gastos registrados"
         
@@ -528,13 +566,12 @@ async def detalle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Ordenar por fecha descendente
     gastos_ordenados = sorted(gastos_mes, key=lambda x: x["fecha"], reverse=True)
     
     mensaje = f"📋 *Detalle: {PRESUPUESTO[categoria]['nombre']}*\n\n"
     total = 0
     
-    for gasto in gastos_ordenados[:20]:  # Mostrar últimos 20
+    for gasto in gastos_ordenados[:20]: 
         fecha = datetime.fromisoformat(gasto["fecha"])
         fecha_str = fecha.strftime("%d/%m %H:%M")
         importe = gasto["importe"]
@@ -549,7 +586,6 @@ async def detalle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(gastos_ordenados) > 20:
         mensaje += f"_... y {len(gastos_ordenados) - 20} gastos más_\n\n"
     
-    # Corregido: usando 'objetivo' en lugar de 'limite'
     objetivo = PRESUPUESTO[categoria]["objetivo"]
     porcentaje = (total / objetivo * 100) if objetivo > 0 else 0
     emoji = "✅" if porcentaje <= 80 else "⚠️" if porcentaje <= 100 else "🚨"
@@ -580,7 +616,7 @@ async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mensaje = f"🔍 *Resultados para '{termino}'*\n"
     mensaje += f"Encontrados {len(resultados)} gastos · Total: {total:.2f}€\n\n"
     
-    for gasto in resultados[:15]:  # Mostrar primeros 15
+    for gasto in resultados[:15]: 
         fecha = datetime.fromisoformat(gasto["fecha"])
         fecha_str = fecha.strftime("%d/%m/%Y")
         cat_nombre = PRESUPUESTO[gasto["categoria"]]["nombre"]
@@ -599,7 +635,6 @@ async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def estadisticas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📊 Analizando tus gastos...")
     
-    # Análisis del mes actual
     mes_actual = datetime.now()
     inicio_mes = mes_actual.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     gastos_mes = gestor.obtener_gastos_rango(inicio_mes, mes_actual)
@@ -608,10 +643,8 @@ async def estadisticas(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 No hay suficientes datos para análisis.")
         return
     
-    # Palabras más frecuentes
     palabras_frecuentes = gestor.analizar_descripciones(inicio_mes, mes_actual)
     
-    # Día de la semana con más gastos
     gastos_por_dia_semana = {i: [] for i in range(7)}
     dias_semana = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
     
@@ -624,15 +657,12 @@ async def estadisticas(update: Update, context: ContextTypes.DEFAULT_TYPE):
                      for dia, gastos in gastos_por_dia_semana.items()}
     dia_mas_gasto = max(promedios_dia, key=promedios_dia.get)
     
-    # Gasto promedio por día
     dias_con_gastos = len(set(datetime.fromisoformat(g["fecha"]).date() for g in gastos_mes))
     promedio_diario = sum(g["importe"] for g in gastos_mes) / dias_con_gastos if dias_con_gastos > 0 else 0
     
-    # Gasto más alto y más bajo
     gasto_max = max(gastos_mes, key=lambda x: x["importe"])
     gasto_min = min(gastos_mes, key=lambda x: x["importe"])
     
-    # Construir mensaje
     mensaje = f"📊 *Estadísticas del Mes*\n\n"
     
     mensaje += f"📈 *Resumen general:*\n"
@@ -656,7 +686,6 @@ async def estadisticas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(mensaje, parse_mode='Markdown')
 
-# NUEVO COMANDO: Redefinir objetivo
 async def redefinir_objetivo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global PRESUPUESTO
     
@@ -689,7 +718,6 @@ async def redefinir_objetivo(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("❌ Objetivo no válido. Usa números (ej: 400 o 350.50)")
         return
         
-    # Actualizar el objetivo globalmente
     PRESUPUESTO[categoria]["objetivo"] = nuevo_objetivo
     
     await update.message.reply_text(
@@ -697,17 +725,14 @@ async def redefinir_objetivo(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"La categoría *{PRESUPUESTO[categoria]['nombre']}* tiene ahora un objetivo de *{nuevo_objetivo:.2f}€*.",
         parse_mode='Markdown'
     )
-    # Nota: Este cambio de objetivo no es persistente tras reiniciar la aplicación 
-    # a menos que lo guardes en un archivo o base de datos.
 
 def main():
-    # Token del bot (lo debes obtener de @BotFather)
     TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
     
-    # Crear aplicación
     application = Application.builder().token(TOKEN).build()
     
-    # Registrar comandos
+    application.create_task(configurar_comandos(application))
+    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("ayuda", ayuda))
     application.add_handler(CommandHandler("gasto", registrar_gasto))
@@ -716,10 +741,9 @@ def main():
     application.add_handler(CommandHandler("detalle", detalle))
     application.add_handler(CommandHandler("buscar", buscar))
     application.add_handler(CommandHandler("estadisticas", estadisticas))
-    # NUEVO COMANDO REGISTRADO
     application.add_handler(CommandHandler("redefinir", redefinir_objetivo))
+    application.add_handler(CommandHandler("deshacer", deshacer_gasto))
     
-    # Iniciar bot
     print("🤖 Bot iniciado correctamente")
     print("Presiona Ctrl+C para detener")
     
