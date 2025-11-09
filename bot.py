@@ -20,6 +20,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# NOTA: Los objetivos son ahora solo una referencia visual, no un límite estricto.
 PRESUPUESTO = {
     "vivienda": {"objetivo": 800, "nombre": "Alquiler y gastos de casa"},
     "ocio": {"objetivo": 350, "nombre": "Suscripciones, fiestas, etc."},
@@ -47,6 +48,7 @@ class GestorGastos:
             json.dump(self.gastos, f, ensure_ascii=False, indent=2)
     
     def agregar_gasto(self, categoria, importe, descripcion=""):
+        # Se elimina cualquier lógica de límite, el gasto siempre se registra.
         mes_actual = datetime.now().strftime("%Y-%m")
         
         if mes_actual not in self.gastos:
@@ -95,7 +97,8 @@ class GestorGastos:
             resumen[categoria] = {
                 "total": total,
                 "cantidad": len(gastos),
-                "limite": PRESUPUESTO.get(categoria, {}).get("limite", 0)
+                # Corregido: usando 'objetivo' en lugar de 'limite'
+                "objetivo": PRESUPUESTO.get(categoria, {}).get("objetivo", 0) 
             }
         
         return resumen
@@ -172,6 +175,9 @@ Ejemplo: `/gasto ocio 15.65 Cervezas con amigos`
 • `/buscar <término>` - Buscar gastos por descripción
 • `/estadisticas` - Análisis de tus gastos
 
+*⚙️ Configuración:*
+• `/redefinir <categoría> <objetivo>` - Cambia el objetivo mensual
+
 *💡 Otros:*
 • `/ayuda` - Info de presupuesto
 """
@@ -179,26 +185,25 @@ Ejemplo: `/gasto ocio 15.65 Cervezas con amigos`
 
 async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mensaje = f"""
-📋 *Tu Presupuesto Mensual:*
+📋 *Tus Objetivos de Gasto Mensual:*
 
 """
     total_presupuesto = 0
     for cat, info in PRESUPUESTO.items():
+        # Corregido: usando 'objetivo' en lugar de 'limite'
         if cat not in ["ahorro", "restaurante"]:
-            total_presupuesto += info['limite']
-        mensaje += f"• *{info['nombre']}*: {info['limite']}€\n"
+            total_presupuesto += info['objetivo'] 
+        mensaje += f"• *{info['nombre']}*: {info['objetivo']}€\n"
     
     mensaje += f"""
 ━━━━━━━━━━━━━━━━━
-💰 *Total presupuesto:* {total_presupuesto}€
+💰 *Suma de objetivos:* {total_presupuesto}€
 💵 *Sueldo neto estimado:* ~2.050€
 🍽️ *Ticket restaurante:* 11€/día (230€/mes)
 
 *💡 Tips:*
 • Registra gastos al momento para no olvidarlos
-• Revisa el `/resumen` semanalmente
-• Usa descripciones claras para analizar patrones
-• Los gráficos te ayudan a ver tendencias
+• Usa `/redefinir <cat> <obj>` para ajustar tus objetivos.
 """
     await update.message.reply_text(mensaje, parse_mode='Markdown')
 
@@ -240,8 +245,9 @@ async def registrar_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         resumen = gestor.obtener_resumen_mes()
         cat_info = resumen.get(categoria, {})
         total = cat_info.get("total", importe)
-        limite = PRESUPUESTO[categoria]["limite"]
-        porcentaje = (total / limite * 100) if limite > 0 else 0
+        # Corregido: usando 'objetivo' en lugar de 'limite'
+        objetivo = PRESUPUESTO[categoria]["objetivo"] 
+        porcentaje = (total / objetivo * 100) if objetivo > 0 else 0
         
         emoji_estado = "✅" if porcentaje <= 80 else "⚠️" if porcentaje <= 100 else "🚨"
         
@@ -256,18 +262,19 @@ async def registrar_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         mensaje += f"""
 ━━━━━━━━━━━━━━━━━
-📊 Total categoría: {total:.2f}€ / {limite}€
-{emoji_estado} {porcentaje:.1f}% del presupuesto
+📊 Total categoría: {total:.2f}€ / {objetivo}€ (Objetivo)
+{emoji_estado} {porcentaje:.1f}% del objetivo
 """
         
         if porcentaje > 100:
-            mensaje += f"\n⚠️ ¡Te has pasado {total-limite:.2f}€!"
+            mensaje += f"\n⚠️ ¡Te has pasado {total-objetivo:.2f}€ de tu objetivo!"
         elif porcentaje > 80:
-            mensaje += f"\n💡 Quedan {limite-total:.2f}€ este mes"
+            mensaje += f"\n💡 Quedan {objetivo-total:.2f}€ para tu objetivo"
         
         await update.message.reply_text(mensaje, parse_mode='Markdown')
         
     except Exception as e:
+        # El gasto debe registrarse sin errores de "limite"
         logger.error(f"Error al registrar gasto: {e}")
         await update.message.reply_text("❌ Error al registrar el gasto. Inténtalo de nuevo.")
 
@@ -288,27 +295,30 @@ async def resumen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             info = resumen_mes[categoria]
             nombre = PRESUPUESTO[categoria]["nombre"]
             total = info["total"]
-            limite = info["limite"]
-            porcentaje = (total / limite * 100) if limite > 0 else 0
+            # Corregido: usando 'objetivo' en lugar de 'limite'
+            objetivo = PRESUPUESTO[categoria]["objetivo"] 
+            
+            porcentaje = (total / objetivo * 100) if objetivo > 0 else 0
             
             total_gastado += total
             
             emoji = "✅" if porcentaje <= 80 else "⚠️" if porcentaje <= 100 else "🚨"
             
             mensaje += f"{emoji} *{nombre}*\n"
-            mensaje += f"   {total:.2f}€ / {limite}€ ({porcentaje:.1f}%) · {info['cantidad']} gastos\n\n"
+            mensaje += f"   {total:.2f}€ / {objetivo}€ ({porcentaje:.1f}%) · {info['cantidad']} gastos\n\n"
     
-    presupuesto_total = sum(v["limite"] for k, v in PRESUPUESTO.items() 
+    # Corregido: usando 'objetivo' en lugar de 'limite'
+    presupuesto_total = sum(v["objetivo"] for k, v in PRESUPUESTO.items() 
                            if k not in ["ahorro", "restaurante"])
     
     mensaje += f"━━━━━━━━━━━━━━━━━\n"
     mensaje += f"💰 *Total gastado:* {total_gastado:.2f}€\n"
-    mensaje += f"📦 *Presupuesto:* {presupuesto_total}€"
+    mensaje += f"📦 *Objetivo total:* {presupuesto_total}€"
     
     if total_gastado > presupuesto_total:
-        mensaje += f"\n🚨 Exceso: {total_gastado - presupuesto_total:.2f}€"
+        mensaje += f"\n🚨 Exceso del objetivo: {total_gastado - presupuesto_total:.2f}€"
     else:
-        mensaje += f"\n✅ Disponible: {presupuesto_total - total_gastado:.2f}€"
+        mensaje += f"\n✅ Queda para el objetivo: {presupuesto_total - total_gastado:.2f}€"
     
     await update.message.reply_text(mensaje, parse_mode='Markdown')
 
@@ -380,21 +390,22 @@ async def grafica(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ax1 = fig.add_subplot(gs[0, 0])
         categorias = []
         totales = []
-        limites = []
+        objetivos = []
         colores = []
         
         for cat in PRESUPUESTO.keys():
             if cat in gastos_por_categoria:
                 nombre = PRESUPUESTO[cat]["nombre"]
                 total = sum(g["importe"] for g in gastos_por_categoria[cat])
-                limite = PRESUPUESTO[cat]["limite"]
+                # Corregido: usando 'objetivo' en lugar de 'limite'
+                objetivo = PRESUPUESTO[cat]["objetivo"]
                 
                 categorias.append(nombre[:20])
                 totales.append(total)
-                limites.append(limite)
+                objetivos.append(objetivo)
                 
-                # Color según % del límite
-                porcentaje = (total / limite * 100) if limite > 0 else 0
+                # Color según % del objetivo
+                porcentaje = (total / objetivo * 100) if objetivo > 0 else 0
                 if porcentaje <= 80:
                     colores.append('#2ecc71')
                 elif porcentaje <= 100:
@@ -406,11 +417,11 @@ async def grafica(update: Update, context: ContextTypes.DEFAULT_TYPE):
         width = 0.35
         
         ax1.bar([i - width/2 for i in x], totales, width, label='Gastado', color=colores)
-        ax1.bar([i + width/2 for i in x], limites, width, label='Límite', color='#3498db', alpha=0.6)
+        ax1.bar([i + width/2 for i in x], objetivos, width, label='Objetivo', color='#3498db', alpha=0.6)
         
         ax1.set_xlabel('Categoría', fontsize=10)
         ax1.set_ylabel('Importe (€)', fontsize=10)
-        ax1.set_title('Gastos vs Presupuesto', fontsize=12, fontweight='bold')
+        ax1.set_title('Gastos vs Objetivo', fontsize=12, fontweight='bold')
         ax1.set_xticks(x)
         ax1.set_xticklabels(categorias, rotation=45, ha='right', fontsize=9)
         ax1.legend()
@@ -538,12 +549,13 @@ async def detalle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(gastos_ordenados) > 20:
         mensaje += f"_... y {len(gastos_ordenados) - 20} gastos más_\n\n"
     
-    limite = PRESUPUESTO[categoria]["limite"]
-    porcentaje = (total / limite * 100) if limite > 0 else 0
+    # Corregido: usando 'objetivo' en lugar de 'limite'
+    objetivo = PRESUPUESTO[categoria]["objetivo"]
+    porcentaje = (total / objetivo * 100) if objetivo > 0 else 0
     emoji = "✅" if porcentaje <= 80 else "⚠️" if porcentaje <= 100 else "🚨"
     
     mensaje += f"━━━━━━━━━━━━━━━━━\n"
-    mensaje += f"{emoji} Total: {total:.2f}€ / {limite}€ ({porcentaje:.1f}%)"
+    mensaje += f"{emoji} Total: {total:.2f}€ / {objetivo}€ (Objetivo)"
     
     await update.message.reply_text(mensaje, parse_mode='Markdown')
 
@@ -644,6 +656,50 @@ async def estadisticas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(mensaje, parse_mode='Markdown')
 
+# NUEVO COMANDO: Redefinir objetivo
+async def redefinir_objetivo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global PRESUPUESTO
+    
+    if len(context.args) != 2:
+        await update.message.reply_text(
+            "❌ Formato incorrecto.\n"
+            "Uso: `/redefinir <categoría> <nuevo_objetivo>`\n"
+            "Ejemplo: `/redefinir ocio 400`",
+            parse_mode='Markdown'
+        )
+        return
+        
+    categoria = context.args[0].lower()
+    
+    if categoria not in PRESUPUESTO:
+        categorias = ", ".join(PRESUPUESTO.keys())
+        await update.message.reply_text(
+            f"❌ Categoría no válida.\n"
+            f"Categorías: `{categorias}`",
+            parse_mode='Markdown'
+        )
+        return
+        
+    try:
+        nuevo_objetivo = float(context.args[1].replace(',', '.'))
+        if nuevo_objetivo < 0:
+            await update.message.reply_text("❌ El objetivo debe ser un número positivo o cero.")
+            return
+    except ValueError:
+        await update.message.reply_text("❌ Objetivo no válido. Usa números (ej: 400 o 350.50)")
+        return
+        
+    # Actualizar el objetivo globalmente
+    PRESUPUESTO[categoria]["objetivo"] = nuevo_objetivo
+    
+    await update.message.reply_text(
+        f"✅ ¡Objetivo actualizado!\n"
+        f"La categoría *{PRESUPUESTO[categoria]['nombre']}* tiene ahora un objetivo de *{nuevo_objetivo:.2f}€*.",
+        parse_mode='Markdown'
+    )
+    # Nota: Este cambio de objetivo no es persistente tras reiniciar la aplicación 
+    # a menos que lo guardes en un archivo o base de datos.
+
 def main():
     # Token del bot (lo debes obtener de @BotFather)
     TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -660,6 +716,8 @@ def main():
     application.add_handler(CommandHandler("detalle", detalle))
     application.add_handler(CommandHandler("buscar", buscar))
     application.add_handler(CommandHandler("estadisticas", estadisticas))
+    # NUEVO COMANDO REGISTRADO
+    application.add_handler(CommandHandler("redefinir", redefinir_objetivo))
     
     # Iniciar bot
     print("🤖 Bot iniciado correctamente")
