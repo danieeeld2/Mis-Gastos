@@ -289,6 +289,8 @@ async def configurar_comandos(application: Application):
         BotCommand("redefinir", "Cambia el objetivo de gasto"),
         BotCommand("configurar", "Reconfigura tus objetivos"),
         BotCommand("deshacer", "Elimina el último gasto"),
+        BotCommand("backup", "Descargar backup de la BD"),
+        BotCommand("restore", "Restaurar BD desde archivo"),
         BotCommand("ayuda", "Información y ayuda")
     ]
     try:
@@ -431,6 +433,8 @@ async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
 *💡 Tips:*
 • Usa `/redefinir <cat> <objetivo>` para ajustar
 • Registra gastos al momento: `/gasto <cat> <imp>`
+• `/backup` - Descargar copia de seguridad de la BD
+• `/restore` - Restaurar BD desde un archivo
 """
     await update.message.reply_text(mensaje, parse_mode='Markdown')
 
@@ -935,6 +939,125 @@ async def grafica(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error al generar gráfica: {e}")
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
+async def backup_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Descargar backup de la base de datos"""
+    user_id = update.effective_user.id
+    
+    # Leer ADMIN_USER_ID desde variable de entorno
+    ADMIN_USER_ID = os.environ.get('ADMIN_USER_ID')
+    
+    if ADMIN_USER_ID:
+        ADMIN_USER_ID = int(ADMIN_USER_ID)
+        if user_id != ADMIN_USER_ID:
+            await update.message.reply_text("⛔ Solo el administrador puede usar este comando")
+            return
+    
+    try:
+        db_path = gestor.db_file
+        
+        if not os.path.exists(db_path):
+            await update.message.reply_text("❌ No se encontró la base de datos")
+            return
+        
+        # Obtener estadísticas de la BD
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM gastos')
+        total_gastos = cursor.fetchone()[0]
+        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM gastos')
+        total_usuarios = cursor.fetchone()[0]
+        conn.close()
+        
+        # Enviar archivo
+        with open(db_path, 'rb') as f:
+            await update.message.reply_document(
+                document=f,
+                filename=f'gastos_backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.db',
+                caption=f'💾 **Backup de la BD**\n\n'
+                        f'📊 Gastos totales: {total_gastos}\n'
+                        f'👥 Usuarios: {total_usuarios}\n'
+                        f'📅 {datetime.now().strftime("%d/%m/%Y %H:%M")}',
+                parse_mode='Markdown'
+            )
+        
+        logger.info(f"Backup enviado a user {user_id}")
+        
+    except Exception as e:
+        logger.error(f"Error en backup: {e}")
+        await update.message.reply_text(f"❌ Error al crear backup: {str(e)}")
+
+async def restore_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Restaurar base de datos desde un archivo enviado"""
+    user_id = update.effective_user.id
+    
+    # Leer ADMIN_USER_ID desde variable de entorno
+    ADMIN_USER_ID = os.environ.get('ADMIN_USER_ID')
+    
+    if ADMIN_USER_ID:
+        ADMIN_USER_ID = int(ADMIN_USER_ID)
+        if user_id != ADMIN_USER_ID:
+            await update.message.reply_text("⛔ Solo el administrador puede usar este comando")
+            return
+    
+    # Verificar que se haya enviado un archivo
+    if not update.message.document:
+        await update.message.reply_text(
+            "📎 Envía el archivo de backup junto con el comando\n\n"
+            "Ejemplo: Envía el archivo .db y en el caption escribe `/restore`",
+            parse_mode='Markdown'
+        )
+        return
+    
+    try:
+        # Verificar que sea un archivo .db
+        filename = update.message.document.file_name
+        if not filename.endswith('.db'):
+            await update.message.reply_text("❌ Solo se permiten archivos .db")
+            return
+        
+        await update.message.reply_text("⏳ Restaurando base de datos...")
+        
+        # Descargar archivo
+        file = await update.message.document.get_file()
+        db_path = gestor.db_file
+        
+        # Hacer backup del archivo actual antes de sobrescribir
+        if os.path.exists(db_path):
+            backup_path = f"{db_path}.backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            os.rename(db_path, backup_path)
+            logger.info(f"BD actual respaldada en {backup_path}")
+        
+        # Descargar el nuevo archivo
+        await file.download_to_drive(db_path)
+        
+        # Verificar integridad
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM gastos')
+        total_gastos = cursor.fetchone()[0]
+        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM gastos')
+        total_usuarios = cursor.fetchone()[0]
+        conn.close()
+        
+        await update.message.reply_text(
+            f'✅ **Base de datos restaurada**\n\n'
+            f'📊 Gastos recuperados: {total_gastos}\n'
+            f'👥 Usuarios: {total_usuarios}\n\n'
+            f'🔄 El bot está operativo con los datos restaurados',
+            parse_mode='Markdown'
+        )
+        
+        logger.info(f"BD restaurada por user {user_id}: {total_gastos} gastos, {total_usuarios} usuarios")
+        
+    except Exception as e:
+        logger.error(f"Error en restore: {e}")
+        await update.message.reply_text(
+            f"❌ **Error al restaurar**\n\n"
+            f"Detalle: {str(e)}\n\n"
+            f"⚠️ Si había una BD anterior, se guardó como backup",
+            parse_mode='Markdown'
+        )
+
 def main():
     TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
     
@@ -959,6 +1082,8 @@ def main():
     application.add_handler(CommandHandler("estadisticas", estadisticas))
     application.add_handler(CommandHandler("grafica", grafica))
     application.add_handler(CommandHandler("redefinir", redefinir_objetivo))
+    application.add_handler(CommandHandler("backup", backup_db))
+    application.add_handler(CommandHandler("restore", restore_db))
     
     # Callback para botones
     application.add_handler(CallbackQueryHandler(boton_callback))
